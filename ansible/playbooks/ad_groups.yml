@@ -1,0 +1,33 @@
+# Creates (or removes, with -e state=absent) the AD security groups that map to
+# AWS permission sets for the new account.
+- name: Manage AD security groups for the new AWS account
+  hosts: domain_controllers
+  gather_facts: false
+  vars:
+    state: present
+    groups_ou: "OU=AWS,OU=Groups,DC=corp,DC=example"
+    roles: [Admin, Developer, ReadOnly]
+  tasks:
+    - name: Ensure one security group per AWS role
+      microsoft.ad.group:
+        name: "SG-AWS-{{ account_id }}-{{ item }}"
+        scope: global
+        category: security
+        path: "{{ groups_ou }}"
+        description: "AWS {{ account_name }} {{ item }} ({{ request_id }})"
+        state: "{{ state }}"
+      loop: "{{ roles }}"
+
+    - name: Add account owners to the Admin group
+      microsoft.ad.group:
+        name: "SG-AWS-{{ account_id }}-Admin"
+        members:
+          add: "{{ owners | map('regex_replace', '@.*$', '') | list }}"
+      when: state == 'present'
+
+    - name: Return output to Temporal
+      ansible.builtin.debug:
+        var: temporal_output
+      vars:
+        temporal_output:
+          ad_groups: "{{ roles | map('regex_replace', '^', 'SG-AWS-' ~ account_id ~ '-') | list }}"

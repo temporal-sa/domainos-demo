@@ -1,0 +1,280 @@
+# Notes shown next to each code snippet on the "Under the hood" tab ("What to
+# notice"), and behind the Agent lab's Code links for entries with "section: lab".
+# The code itself is read live from the source files (between
+# "# [snippet:<id>]" and "# [/snippet]" markers), so it never drifts from
+# what's running. Edit the notes freely; order here is the order in the tab.
+
+agent-loop:
+  mode: plain
+  title: The agent loop, no framework
+  file: demo/workflows.py
+  summary: The workflow is the agent. Each Claude turn is one activity and each tool call is another.
+  points:
+    - "Kill the worker mid-run: the agent resumes at the next turn. Earlier turns come back from history, so Claude is never asked the same thing twice and tool calls aren't repeated."
+    - "Tools hit real systems (CMDB, Panorama). As separate activities they get their own retries and timeouts; a flaky CMDB doesn't restart the agent."
+    - "Every turn and tool call is an event you can open in the Temporal UI, with inputs and outputs."
+    - "This is the fine-grained approach. Wrapping a whole agent in one activity works, but a failure means running the whole agent again."
+    - "The Agent lab tab runs this same agent on LangChain and on LangGraph (Temporal's LangGraph plugin). Same prompt, same tools: crash them and compare."
+
+human-review:
+  mode: plain
+  title: Human in the loop
+  file: demo/workflows.py
+  summary: The agent submits a draft and the workflow waits for Network Security. Approve, reject, or ask for changes.
+  points:
+    - "wait_condition is a durable wait: no polling, no thread held, survives worker restarts. It can wait for days."
+    - "The decision arrives as a Workflow Update. The validator rejects bad input (no draft pending, empty change request) before anything is recorded, and the caller gets an answer back."
+    - "Request changes: the feedback goes into the agent's conversation and it revises. The whole back-and-forth is in history, which is the audit trail."
+    - "The same Update could come from Slack, Teams or a ServiceNow approval instead of this UI."
+
+agent-activity:
+  title: A model call as an activity
+  file: demo/activities.py
+  summary: The Anthropic client's own retries are off. Temporal owns retries, so they are visible and survive crashes.
+  points:
+    - "Rate limits and timeouts become activity retries with backoff, recorded in history."
+    - "If Claude is unavailable through the last attempt, the activity falls back instead of failing the request."
+
+retries:
+  title: Retries, heartbeats and getting stuck safely
+  file: demo/workflows.py
+  summary: One step is one activity. Transient failures retry on their own; real problems pause the track for a person.
+  points:
+    - "The retry policy is declared once. No retry loops in your code."
+    - "heartbeat_timeout is how a dead worker gets noticed: miss a heartbeat and the step moves to another worker."
+    - "task_queue routes on-prem steps to on-prem workers. Those workers only make outbound connections."
+    - "In bug mode the step retries until it succeeds (maximum_attempts=0), waiting for a deployed fix."
+
+demo-bug:
+  title: The demo bug
+  file: demo/subnets.py
+  summary: A real exception in real activity code, reachable only in bug mode.
+  points:
+    - "Turn on bug mode, place a request, and watch “Create VPC and subnets” fail and retry."
+    - "Comment out the marked line and save. The demo checks it compiles, rolls the workers onto the new code, and the next retry succeeds."
+    - "Everything before that step is untouched: approvals, the AWS account, the AD groups. No re-runs, no clean-up."
+    - "Python doesn't reload code in a running process, so a fix means new worker processes. That's what a real deploy looks like too."
+
+fan-out:
+  title: Fan-out and fan-in
+  file: demo/workflows.py
+  summary: Ten teams as child workflows. Each starts the moment its dependencies are done.
+  points:
+    - "The dependency graph comes from config/catalog.yaml. Add a team there and it shows up here and on the map."
+    - "The loop sleeps until something changes: a team finishes, an approval lands, someone cancels."
+    - "One request and one change ticket fan out to ten teams, instead of a ticket per team that someone has to chase."
+
+approvals:
+  title: Approvals and escalation timers
+  file: demo/workflows.py
+  summary: Each pending approval gets a durable timer that escalates if nobody answers.
+  points:
+    - "Timers live on the Temporal server. Restart every worker and the escalation still fires on time."
+    - "Auto-approve for sandbox accounts is a policy in the catalog, not code."
+
+# --- Agent lab ---------------------------------------------------------------------
+# section: lab keeps these out of the main Under the hood list (they sit in a
+# collapsed "Agent lab code" group). mode: which runtime they belong to. Entries with "code:"
+# instead of markers are illustrations: simplified Python, labeled as not run.
+
+worker-registration:
+  section: lab
+  mode: shared
+  title: The worker registers everything
+  file: demo/worker.py
+  summary: One worker process hosts the workflows and activities for every runtime, plus Temporal's LangGraph plugin when it's installed.
+  points:
+    - "This process runs on your infrastructure and only makes outbound calls to Temporal."
+    - "Workflows and activities live in the same worker here; in production you can split them by task queue."
+
+plain-claude-call:
+  section: lab
+  mode: plain
+  title: The Anthropic call, no framework
+  file: demo/ai/claude.py
+  summary: One messages.create call with the tool schemas. The client is built with max_retries=0 so Temporal owns retries.
+  points:
+    - "Claude's reply comes back as content blocks: text, and tool_use blocks naming a tool and its arguments."
+    - "Blocks are kept whole because they go back to the API unchanged on the next turn."
+
+plain-tool-activity:
+  section: lab
+  mode: plain
+  title: One tool call is one activity
+  file: demo/activities.py
+  summary: The workflow starts this once per tool request. It runs the Python function against the (mock) system.
+  points:
+    - "If the CMDB flakes, only this call retries, with its own backoff."
+
+plain-tools:
+  section: lab
+  mode: plain
+  title: The tools are plain Python
+  file: demo/agents/firewall.py
+  summary: A dispatch from tool name to function. Claude sees them as JSON schemas (TOOLS, below this in the file).
+  points:
+    - "Same functions in every runtime: LangChain mode wraps these with @tool."
+
+lc-loop:
+  section: lab
+  mode: langchain
+  title: The loop stays in the workflow
+  file: demo/frameworks/langchain_workflow.py
+  summary: Same loop as with no framework. Each model call and each tool call is an activity; LangChain runs inside them.
+  points:
+    - "Temporal has no official LangChain plugin. This is all the wrapping it takes: one activity per model call, one per tool call."
+    - "The conversation is kept as LangChain's serialized messages, so it sits in workflow history."
+    - "No AgentExecutor: the workflow decides what runs next, so every step is durable and a person can step in between turns."
+
+lc-run:
+  section: lab
+  mode: langchain
+  title: Review between rounds
+  file: demo/frameworks/langchain_workflow.py
+  summary: Draft, wait for Network Security, and on a change request feed the reviewer's notes back into the conversation.
+  points:
+    - "wait_for_review is a wait_condition on a Workflow Update: no compute while a person decides, for minutes or days."
+
+lc-turn:
+  section: lab
+  mode: langchain
+  title: A LangChain model turn is an activity
+  file: demo/frameworks/langchain_mode.py
+  summary: The activity wraps one LangChain call and heartbeats while Claude thinks.
+  points:
+    - "heartbeating() lets Temporal notice a dead worker within seconds, not after a two-minute timeout."
+
+lc-model:
+  section: lab
+  mode: langchain
+  title: ChatAnthropic with tools bound
+  file: demo/frameworks/langchain_mode.py
+  summary: Plain LangChain. messages_from_dict rebuilds the conversation; bind_tools adds the schemas; the AIMessage comes back with tool_calls.
+  points:
+    - "max_retries=0: Temporal owns retries, so every retry is in history and survives a crash."
+    - "LangGraph mode's agent node makes this same call."
+
+lc-tool:
+  section: lab
+  mode: langchain
+  title: A LangChain tool call is an activity
+  file: demo/frameworks/langchain_mode.py
+  summary: Looks up the @tool by name and runs it with tool.ainvoke(args).
+  points:
+    - "Bad arguments go back to Claude as a tool result instead of failing the activity: retrying the same bad call wouldn't help."
+
+lc-tools:
+  section: lab
+  mode: langchain
+  title: "@tool functions"
+  file: demo/frameworks/langchain_mode.py
+  summary: The same Python as the plain agent, wrapped with @tool. LangChain builds the schemas Claude sees from the type hints.
+  points:
+    - "A pydantic Rule model gives Claude the same rule schema the plain agent spells out by hand."
+
+lc-coarse:
+  section: lab
+  mode: langchain
+  title: "Not this: the whole agent in one activity"
+  summary: The coarse option. It runs, but a failure anywhere repeats everything before it.
+  code: |
+    # Illustration (simplified, not run): the "coarse" alternative
+    @activity.defn
+    async def run_firewall_agent(request: dict) -> dict:
+        agent = create_agent(ChatAnthropic(model=MODEL), tools=[lookup_cmdb, check_policy, ...])
+        result = await agent.ainvoke({"messages": [task_prompt(request)]})
+        return result  # 6 model calls and 10 tool calls, all inside one activity
+
+    # A crash or timeout on turn 6 retries the activity from the top:
+    #   turns 1-5 run again (same tokens, same CMDB lookups, maybe a different draft),
+    #   and there's no point between turns where a person can review.
+  points:
+    - "Coarse is fine for short, cheap, side-effect-free agents. For anything that calls real systems or needs a human in the loop, go fine-grained."
+    - "Crash a run in the lab: the scorecard shows what this version would have redone."
+
+lg-workflow:
+  section: lab
+  mode: langgraph
+  title: Running the graph from a workflow
+  file: demo/frameworks/langgraph_workflow.py
+  summary: Compile the registered graph, stream node updates, and turn interrupt() into a durable human review.
+  points:
+    - "InMemorySaver is enough: Temporal's event history is the durable copy, not a checkpoint database."
+    - "interrupt() shows up as __interrupt__ in the stream. The workflow waits on a Workflow Update and resumes with Command(resume=...)."
+    - "Same get_agent query and review_draft update as the other runtimes, so the UI and the parent track don't care which one ran."
+
+lg-plugin:
+  section: lab
+  mode: langgraph
+  title: Registering the graph with the plugin
+  file: demo/frameworks/__init__.py
+  summary: The worker builds the graph once and hands it to LangGraphPlugin; the workflow gets it back by name.
+  points:
+    - "The LangGraph plugin is in Public Preview: APIs can still change."
+
+lg-plugin-does:
+  section: lab
+  mode: langgraph
+  title: What the plugin does with each node
+  summary: A simplified picture of the plugin's job. Not its actual code.
+  code: |
+    # Illustration (simplified, not the plugin's real code)
+    # The graph's loop (choose a node, merge its update, route) runs in the workflow.
+    # For each node with metadata execute_in="activity", it effectively does:
+    update = await workflow.execute_activity(
+        run_graph_node,                    # registered for you by LangGraphPlugin
+        args=[graph_name, node_name, state],
+        start_to_close_timeout=meta["start_to_close_timeout"],
+        heartbeat_timeout=meta["heartbeat_timeout"],
+        retry_policy=meta["retry_policy"],
+    )
+    state = merge(state, update)           # your reducers, e.g. operator.add on messages
+    next_node = await route(state)         # your routing function, in the workflow
+  points:
+    - "Your graph code stays plain LangGraph. Durability comes from where each piece runs."
+
+lg-graph:
+  section: lab
+  mode: langgraph
+  title: The graph, with nodes as activities
+  file: demo/frameworks/langgraph_mode.py
+  summary: A normal StateGraph. Node metadata tells the plugin to run each node as an activity with its own timeout, heartbeat and retries.
+  points:
+    - "execute_in: activity turns a node into an activity. The graph is otherwise plain LangGraph."
+    - "The unit of durability is the node: the tools node retries with all of its calls."
+
+lg-routes:
+  section: lab
+  mode: langgraph
+  title: Routing runs in the workflow
+  file: demo/frameworks/langgraph_mode.py
+  summary: Conditional edges read state and pick the next node. The plugin runs them in the workflow, so they must be async and deterministic.
+  points:
+    - "No I/O, clocks or randomness here; anything like that belongs in a node."
+
+lg-agent-node:
+  section: lab
+  mode: langgraph
+  title: The agent node
+  file: demo/frameworks/langgraph_mode.py
+  summary: One model turn, using the same ChatAnthropic call as LangChain mode. Runs as an activity.
+  points:
+    - "The node returns a state update; the plugin saves it in history before the graph moves on."
+
+lg-tools-node:
+  section: lab
+  mode: langgraph
+  title: The tools node
+  file: demo/frameworks/langgraph_mode.py
+  summary: Every tool call from one model turn, in parallel, in one activity.
+  points:
+    - "Make the CMDB flaky in the lab: the whole node retries, with every lookup in it. Split tools into their own nodes if each call needs its own retry."
+
+lg-review-node:
+  section: lab
+  mode: langgraph
+  title: The review node calls interrupt()
+  file: demo/frameworks/langgraph_mode.py
+  summary: Pauses the graph with the draft. When the workflow resumes it, interrupt() returns Network Security's decision.
+  points:
+    - "On resume the node runs again from the top and interrupt() returns the decision, as it would outside Temporal."

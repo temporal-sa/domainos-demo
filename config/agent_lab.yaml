@@ -1,0 +1,340 @@
+# The Agent lab: what each diagram shows, the step-by-step walkthrough, the
+# scenarios you can run, and the "who does what" table. Edit the words freely;
+# the UI reloads this file every few seconds.
+#
+# Box ids the diagram knows: service, person, worker, workflow, workflow.review,
+# graph, llm, llm.inner, tool, tool.inner, review, review.inner, claude, systems.
+# "code" lists snippet ids from config/code_notes.yaml (the Code links).
+# "temporal" is where the Temporal UI link goes: run (this runtime's latest lab
+# run), queue (the vending-core task queue) or runs (every lab run).
+
+owners:
+  temporal: {label: Temporal, note: "Durable execution: history, retries, timers, task queues"}
+  langchain: {label: LangChain, note: "Model and tool plumbing"}
+  langgraph: {label: LangGraph, note: "Graph: nodes, routing, state, interrupt()"}
+  code: {label: Your code, note: "Plain Python you write"}
+  external: {label: Outside system, note: "Called over the network"}
+
+shared:
+  service:
+    owner: temporal
+    tag: Temporal Service
+    title: Temporal Cloud or self-hosted
+    items: ["Event history: every result, saved", "Task queue: vending-core", "Retries, timers, Updates"]
+    temporal: runs
+  worker:
+    owner: code
+    tag: Your worker process
+    title: "Your infrastructure, task queue vending-core"
+    code: [worker-registration]
+    temporal: queue
+  claude: {owner: external, tag: Anthropic, title: Claude API, body: "Messages API with tool use"}
+  systems: {owner: external, tag: Bank systems, title: "CMDB, Panorama, policy", body: "Mock data in the demo, shaped like the real thing"}
+  person: {owner: external, tag: Person, title: Network Security reviewer, body: "Decides in the Domainos UI. The decision reaches the workflow through Temporal as a Workflow Update."}
+
+modes:
+  plain:
+    label: No framework
+    headline: "Temporal only. Your workflow is the agent loop. Each Claude call and each tool call is a Temporal activity that runs plain Python."
+    boxes:
+      workflow:
+        tag: Temporal workflow
+        name: FirewallRuleAgentWorkflow
+        title: The agent loop is your workflow code
+        body: "Ask for a model turn, run the tools Claude asks for, repeat until it submits. The conversation is workflow state."
+        code: [agent-loop]
+        temporal: run
+        review: {tag: Workflow Update, title: "Wait for review", body: "wait_condition until Network Security decides", code: [human-review]}
+      llm:
+        tag: Temporal activity
+        name: agent_llm_turn
+        title: One model turn
+        code: [agent-activity]
+        temporal: run
+        inner: {owner: code, tag: Your code, title: Anthropic SDK, body: "client.messages.create(tools=TOOLS)", code: [plain-claude-call]}
+      tool:
+        tag: Temporal activity
+        name: agent_tool
+        title: One tool call
+        code: [plain-tool-activity]
+        temporal: run
+        inner: {owner: code, tag: Your code, title: Python functions, body: "lookup_cmdb, check_existing_rules, check_policy. Described to Claude as JSON schemas.", code: [plain-tools]}
+    steps:
+      - title: The workflow asks for a model turn
+        text: "The loop in the workflow schedules a model-turn activity with the conversation so far. Temporal records that in history and puts the task on the vending-core queue."
+        lit: [workflow, service, llm]
+        arrows: [[workflow, service, schedule activity], [service, llm, task queue]]
+        code: [agent-loop]
+        live: idle
+      - title: The activity calls Claude
+        text: "A worker runs the activity: one Anthropic API call with the tool schemas. The SDK's own retries are off, so every retry is Temporal's and shows in history."
+        lit: [llm, llm.inner, claude]
+        arrows: [[llm.inner, claude, "messages.create(tools=…)"]]
+        code: [agent-activity, plain-claude-call]
+        live: llm
+      - title: Claude asks for a tool. It doesn't run it.
+        text: "Claude's reply is data, a tool request such as {example}. Claude never reaches your systems; it can only ask."
+        lit: [claude, llm, llm.inner]
+        arrows: [[claude, llm.inner, "tool_use: {tool}"]]
+        code: [plain-claude-call]
+      - title: The reply is saved in history
+        text: "The activity returns Claude's reply. Temporal saves it in event history and wakes the workflow with it. This turn will never run again, even if every worker dies."
+        lit: [llm, service, workflow]
+        arrows: [[llm, service, activity completed], [service, workflow, result]]
+        code: [agent-activity]
+      - title: The workflow runs each requested tool
+        text: "The workflow starts one tool activity per tool request, in parallel. Your code decides what runs; Claude only asked."
+        lit: [workflow, service, tool]
+        arrows: [[workflow, service, schedule activities], [service, tool, task queue]]
+        code: [agent-loop]
+      - title: The tool activity calls your system
+        text: "A plain Python function hits the CMDB, Panorama or the policy engine. If the CMDB flakes, that one call retries on its own."
+        lit: [tool, tool.inner, systems]
+        arrows: [[tool.inner, systems, "lookup_cmdb(…)"]]
+        code: [plain-tool-activity, plain-tools]
+        live: tool
+      - title: The result goes back to Claude next turn
+        text: "The tool result is saved in history, added to the conversation as a tool_result, and the loop goes back to step 1."
+        lit: [tool, service, workflow]
+        arrows: [[tool, service, activity completed], [service, workflow, result]]
+        code: [agent-loop]
+      - title: Claude submits; a person decides
+        text: "When Claude calls submit_rules, the loop stops and the workflow waits, using no compute, until Network Security sends a Workflow Update: approve, reject or request changes."
+        lit: [person, workflow, workflow.review, service]
+        arrows: [[person, workflow.review, "Update: review_draft"]]
+        code: [human-review]
+        live: review
+      - title: If a worker dies
+        text: "Nothing in the worker's memory matters. Another worker replays the workflow from history: finished turns and tool calls come back as saved results, and only the activity that was running starts again."
+        lit: [service, worker, workflow]
+        arrows: [[service, workflow, replay from history]]
+        code: [agent-loop]
+        live: recover
+
+  langchain:
+    label: LangChain
+    headline: "Temporal wraps LangChain. The workflow is still the agent loop; LangChain only runs inside activities: ChatAnthropic for the model call, @tool for the tools."
+    boxes:
+      workflow:
+        tag: Temporal workflow
+        name: LangChainAgentWorkflow
+        title: The agent loop is still your workflow code
+        body: "Same loop as with no framework, holding LangChain messages. No AgentExecutor: LangChain never decides what runs next."
+        code: [lc-loop]
+        temporal: run
+        review: {tag: Workflow Update, title: "Wait for review", body: "wait_condition until Network Security decides", code: [lc-run]}
+      llm:
+        tag: Temporal activity
+        name: lc_llm_turn
+        title: One model turn
+        code: [lc-turn]
+        temporal: run
+        inner: {owner: langchain, tag: LangChain, title: ChatAnthropic, body: ".bind_tools(tools).ainvoke(messages) returns an AIMessage with tool_calls", code: [lc-model]}
+      tool:
+        tag: Temporal activity
+        name: lc_tool
+        title: One tool call
+        code: [lc-tool]
+        temporal: run
+        inner: {owner: langchain, tag: LangChain, title: "@tool functions", body: "Schemas come from type hints; tool.ainvoke(args) runs one", code: [lc-tools]}
+    note: {title: "Not this: the whole agent in one activity", body: "Wrapping AgentExecutor (or create_agent) in a single activity works, but a failure on turn 6 reruns turns 1 to 5, and there's nowhere to pause for review.", code: [lc-coarse]}
+    steps:
+      - title: The workflow asks for a model turn
+        text: "Your loop in the workflow schedules an lc_llm_turn activity with the conversation, kept as serialized LangChain messages. Temporal records it and queues it."
+        lit: [workflow, service, llm]
+        arrows: [[workflow, service, schedule activity], [service, llm, task queue]]
+        code: [lc-loop]
+        live: idle
+      - title: LangChain calls Claude, inside the activity
+        text: "The activity rebuilds the messages and calls ChatAnthropic with the tools bound. LangChain handles the API format; Temporal handles retries, so LangChain's are off (max_retries=0)."
+        lit: [llm, llm.inner, claude]
+        arrows: [[llm.inner, claude, "ChatAnthropic.ainvoke"]]
+        code: [lc-turn, lc-model]
+        live: llm
+      - title: Claude asks for a tool; LangChain parses it
+        text: "Claude replies with a tool request. LangChain turns it into AIMessage.tool_calls, such as {example}. It's still only data."
+        lit: [claude, llm, llm.inner]
+        arrows: [[claude, llm.inner, "tool_calls: {tool}"]]
+        code: [lc-model]
+      - title: The AIMessage is saved in history
+        text: "The activity returns the serialized AIMessage. Temporal saves it and wakes the workflow, which appends it to the conversation."
+        lit: [llm, service, workflow]
+        arrows: [[llm, service, activity completed], [service, workflow, AIMessage]]
+        code: [lc-turn]
+      - title: The workflow, not LangChain, runs each tool
+        text: "The workflow starts one lc_tool activity per tool call. This is the part an AgentExecutor would do; here it's durable workflow code."
+        lit: [workflow, service, tool]
+        arrows: [[workflow, service, schedule activities], [service, tool, task queue]]
+        code: [lc-loop]
+      - title: The activity runs the LangChain @tool
+        text: "tool.ainvoke(args) validates the arguments against the type hints and runs the function. A flaky CMDB lookup retries on its own."
+        lit: [tool, tool.inner, systems]
+        arrows: [[tool.inner, systems, "lookup_cmdb(…)"]]
+        code: [lc-tool, lc-tools]
+        live: tool
+      - title: A ToolMessage goes back to Claude next turn
+        text: "The result is saved in history and appended as a ToolMessage; the loop goes back to step 1."
+        lit: [tool, service, workflow]
+        arrows: [[tool, service, activity completed], [service, workflow, ToolMessage]]
+        code: [lc-loop]
+      - title: Claude submits; a person decides
+        text: "submit_rules stops the loop. The workflow waits for a Workflow Update from Network Security, exactly as with no framework."
+        lit: [person, workflow, workflow.review, service]
+        arrows: [[person, workflow.review, "Update: review_draft"]]
+        code: [lc-run]
+        live: review
+      - title: If a worker dies
+        text: "Finished turns and tool calls replay from history; only the running activity starts again. With the whole agent in one activity, all of it would start again."
+        lit: [service, worker, workflow]
+        arrows: [[service, workflow, replay from history]]
+        code: [lc-loop, lc-coarse]
+        live: recover
+
+  langgraph:
+    label: LangGraph
+    preview: true
+    headline: "LangGraph runs inside Temporal. Temporal's LangGraph plugin runs your graph in the workflow, where routing and state live, and runs each node it picks as an activity."
+    boxes:
+      workflow:
+        tag: Temporal workflow
+        name: LangGraphAgentWorkflow
+        title: Runs your graph
+        body: "Compiles the graph registered with the plugin, streams node updates, and turns interrupt() into a durable review."
+        code: [lg-workflow]
+        temporal: run
+        review: {tag: Workflow Update, title: "Resume with Command(resume=…)", body: "wait_condition, then resume the paused graph", code: [lg-workflow]}
+      graph:
+        owner: langgraph
+        tag: LangGraph graph, via Temporal's plugin
+        title: "StateGraph: agent, tools, review"
+        body: "Routing functions and state run here, in the workflow. Each node runs as an activity."
+        nodes: [agent, tools, review]
+        code: [lg-graph, lg-routes]
+      llm:
+        tag: Temporal activity, graph node
+        name: agent
+        title: The agent node
+        code: [lg-agent-node]
+        temporal: run
+        inner: {owner: langchain, tag: LangChain, title: ChatAnthropic, body: "The same model call as LangChain mode", code: [lc-model]}
+      tool:
+        tag: Temporal activity, graph node
+        name: tools
+        title: The tools node, one per turn
+        code: [lg-tools-node]
+        temporal: run
+        inner: {owner: langchain, tag: LangChain, title: "@tool functions", body: "Every tool call from one turn, together", code: [lc-tools]}
+      review:
+        tag: Temporal activity, graph node
+        name: review
+        title: The review node
+        code: [lg-review-node]
+        temporal: run
+        inner: {owner: langgraph, tag: LangGraph, title: "interrupt()", body: "Pauses the graph until the workflow resumes it", code: [lg-review-node]}
+    note: {title: "What the plugin does for each node", body: "Roughly: execute_activity(run_node, …) with the node's timeout and retry policy. Your graph code doesn't change.", code: [lg-plugin-does]}
+    steps:
+      - title: The workflow runs your graph
+        text: "The workflow compiles the graph registered with Temporal's LangGraph plugin and streams it. LangGraph's routing and state run here, inside the workflow."
+        lit: [workflow, graph]
+        arrows: []
+        code: [lg-workflow, lg-plugin]
+        live: idle
+      - title: LangGraph picks the agent node; Temporal runs it
+        text: "The plugin schedules the agent node as a Temporal activity, with the timeout, heartbeat and retry policy from the node's metadata."
+        lit: [graph, service, llm]
+        arrows: [[graph, service, schedule node], [service, llm, task queue]]
+        code: [lg-graph, lg-plugin-does]
+      - title: The node calls Claude through LangChain
+        text: "Inside the activity, the agent node calls ChatAnthropic with the tools bound: the same call LangChain mode makes."
+        lit: [llm, llm.inner, claude]
+        arrows: [[llm.inner, claude, "ChatAnthropic.ainvoke"]]
+        code: [lg-agent-node, lc-model]
+        live: llm
+      - title: Claude's tool request becomes graph state
+        text: "Claude asks for tools, such as {example}. The node returns that AIMessage as a state update; Temporal saves it in history and the graph merges it into state."
+        lit: [llm, service, graph]
+        arrows: [[llm, service, node finished], [service, graph, state update]]
+        code: [lg-agent-node]
+      - title: A routing function picks the next node
+        text: "after_agent sees tool_calls and routes to the tools node. Routing runs in the workflow, so it only reads state: no I/O, no clocks, no randomness."
+        lit: [graph]
+        arrows: []
+        code: [lg-routes]
+      - title: The tools node runs every requested tool
+        text: "One activity for the whole batch. If one CMDB lookup fails, the node retries with all of its calls. Split tools into separate nodes if each needs its own retry."
+        lit: [graph, service, tool, tool.inner, systems]
+        arrows: [[graph, service, schedule node], [service, tool, task queue], [tool.inner, systems, lookups]]
+        code: [lg-tools-node, lc-tools]
+        live: tool
+      - title: Results flow back; the graph loops
+        text: "ToolMessages come back as state, saved in history. The graph routes back to the agent node for the next turn."
+        lit: [tool, service, graph]
+        arrows: [[tool, service, node finished], [service, graph, state update]]
+        code: [lg-routes]
+      - title: interrupt() pauses the graph for a person
+        text: "When Claude submits, the graph routes to the review node, which calls interrupt(). The workflow waits for Network Security's Workflow Update, then resumes the graph with Command(resume=decision)."
+        lit: [review, review.inner, graph, person, workflow.review, service]
+        arrows: [[review.inner, graph, "interrupt()", gutter], [person, workflow.review, "Update: review_draft"], [workflow.review, graph, "Command(resume=…)"]]
+        code: [lg-review-node, lg-workflow]
+        live: review
+      - title: If a worker dies
+        text: "The workflow replays from history: finished nodes come back as saved results and only the node that was running starts again. InMemorySaver is enough; history is the durable copy."
+        lit: [service, worker, workflow, graph]
+        arrows: [[service, workflow, replay from history]]
+        code: [lg-workflow]
+        live: recover
+
+scenarios:
+  - id: happy
+    label: Happy path
+    summary: "Prod account that needs the Oracle loan database, mainframe MQ, DNS and NTP. Claude drops TN3270 (needs a CISO exception) and skips DNS (already allowed)."
+  - id: crash
+    label: Worker crash mid-run
+    summary: "Same request. When the third model turn starts, every core worker is killed; fresh ones start 3 seconds later."
+    crash_at_turn: 3
+  - id: flaky_cmdb
+    label: Flaky CMDB
+    summary: "30% of CMDB lookups fail while the run drafts. Watch what retries: one call, or a whole node."
+    cmdb_error_rate: 0.3
+  - id: claude_429
+    label: Claude rate-limited
+    summary: "The first two model calls get a 429 from Claude. Temporal backs off and retries the turn."
+    model_faults: 2
+
+matrix:
+  - job: Decides what runs next
+    plain: [[temporal, "The workflow (your loop)"]]
+    langchain: [[temporal, "The workflow (your loop)"]]
+    langgraph: [[langgraph, "Graph routing"], [temporal, "running in the workflow"]]
+  - job: Keeps the conversation
+    plain: [[temporal, "Workflow state, saved in history"]]
+    langchain: [[temporal, "Workflow state"], [langchain, "as LangChain messages"]]
+    langgraph: [[langgraph, "Graph state"], [temporal, "inside the workflow"]]
+  - job: Calls Claude
+    plain: [[code, "Anthropic SDK"], [temporal, "in an activity"]]
+    langchain: [[langchain, "ChatAnthropic"], [temporal, "in an activity"]]
+    langgraph: [[langchain, "ChatAnthropic"], [temporal, "in the agent node's activity"]]
+  - job: Describes tools to Claude
+    plain: [[code, "JSON schemas you write"]]
+    langchain: [[langchain, "@tool, from type hints"]]
+    langgraph: [[langchain, "@tool, from type hints"]]
+  - job: Runs a tool
+    plain: [[code, "Python function"], [temporal, "one activity per call"]]
+    langchain: [[langchain, "@tool"], [temporal, "one activity per call"]]
+    langgraph: [[langchain, "@tool"], [temporal, "one activity per tools node"]]
+  - job: Retries a failed call
+    plain: [[temporal, "Per call"]]
+    langchain: [[temporal, "Per call"]]
+    langgraph: [[temporal, "Per node"]]
+  - job: Survives a crash
+    plain: [[temporal, "Replays from history"]]
+    langchain: [[temporal, "Replays from history"]]
+    langgraph: [[temporal, "Replays from history"]]
+  - job: Pauses for a person
+    plain: [[temporal, "Workflow Update + wait_condition"]]
+    langchain: [[temporal, "Workflow Update + wait_condition"]]
+    langgraph: [[langgraph, "interrupt()"], [temporal, "Workflow Update, then Command(resume=…)"]]
+  - job: How it gets onto Temporal
+    plain: [[temporal, "Temporal SDK"]]
+    langchain: [[code, "Activities you write (no official plugin)"]]
+    langgraph: [[temporal, "Temporal's LangGraph plugin (Public Preview)"]]

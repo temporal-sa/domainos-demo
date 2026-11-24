@@ -1,0 +1,6 @@
+# ansible-galaxy collection install -r ansible/requirements.yml
+collections:
+  - name: microsoft.ad
+  - name: community.windows
+  - name: infoblox.nios_modules
+  - name: paloaltonetworks.panos

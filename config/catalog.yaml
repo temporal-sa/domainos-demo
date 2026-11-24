@@ -1,0 +1,216 @@
+# ---------------------------------------------------------------------------
+# Provisioning catalog
+#
+# Everything the demo knows about "how a new AWS account gets built" lives here:
+# the tracker stages, the systems each step touches, the teams (tracks) that
+# fan out after approval, the approvals themselves, and the failure presets the
+# demo controls can arm.
+#
+# Add a track, remove a step, or change a dependency here and the workflow, the
+# provisioning map and the requester view all pick it up. No workflow code
+# changes are needed.
+#
+# Conditions (`when`) look at the request spec that Claude extracts at intake:
+#   when: onprem_connectivity                         -> spec field is truthy
+#   when: {environment: [prod]}                       -> spec field is one of the values
+#   when: {data_classification: [Confidential, Restricted], environment: [prod]}  (all must match)
+# ---------------------------------------------------------------------------
+
+stages:
+  - id: intake
+    label: Request received
+    pizza: Order placed
+  - id: approvals
+    label: Approvals
+    pizza: Prep
+  - id: provisioning
+    label: Provisioning
+    pizza: In the oven
+  - id: verification
+    label: Verification
+    pizza: Quality check
+  - id: delivered
+    label: Delivered
+    pizza: Out the door
+
+# Where each system lives decides which worker pool runs its steps.
+#   cloud  -> "core" workers (could run anywhere: Kubernetes, ECS, a laptop)
+#   onprem -> "on-prem" workers inside the data center. They poll Temporal
+#             outbound, so nothing has to open an inbound path to them.
+systems:
+  servicenow:          {label: ServiceNow,                 location: cloud,  connector: servicenow}
+  aws_orgs:            {label: AWS Organizations,          location: cloud,  connector: aws}
+  aws_identity_center: {label: AWS IAM Identity Center,    location: cloud,  connector: aws}
+  aws_network:         {label: AWS VPC & Transit Gateway,  location: cloud,  connector: aws}
+  aws_security:        {label: AWS security services,      location: cloud,  connector: aws}
+  aws_billing:         {label: AWS Budgets,                location: cloud,  connector: aws}
+  okta:                {label: Okta,                       location: cloud,  connector: okta}
+  active_directory:    {label: Active Directory,           location: onprem, connector: ansible}
+  ipam:                {label: Infoblox IPAM,              location: onprem, connector: ansible}
+  firewall:            {label: Palo Alto Panorama,         location: onprem, connector: ansible}
+  dns:                 {label: Windows DNS,                location: onprem, connector: ansible}
+  splunk:              {label: Splunk,                     location: onprem, connector: splunk}
+  claude_agent:        {label: Claude agent + Network Security review, location: cloud, connector: agent}
+
+approvals:
+  - id: cloud_coe
+    name: Cloud CoE
+    role: Cloud Center of Excellence
+    approver: Priya Natarajan
+    escalation: Marcus Webb (Director, Cloud Platform)
+    blocks: request
+    auto_when: {environment: [sandbox]}
+    auto_reason: Sandbox accounts are pre-approved by Cloud CoE policy
+  - id: infosec
+    name: Information Security
+    role: Data protection review
+    approver: Dana Whitfield
+    escalation: Office of the CISO
+    blocks: request
+    when: {data_classification: [Confidential, Restricted]}
+    reason: The account will hold confidential or restricted data
+  - id: finance
+    name: Finance
+    role: Cost center owner
+    approver: Luis Ortega
+    escalation: Cloud FinOps lead
+    blocks: request
+    when: {environment: [prod]}
+    reason: Production accounts carry a committed monthly budget
+
+tracks:
+  - id: account
+    name: AWS account
+    team: Cloud Platform Engineering
+    depends_on: []
+    steps:
+      - {id: create_account, name: Create account in AWS Organizations, system: aws_orgs, action: create_account, seconds: 7, undo: close_account}
+      - {id: place_ou,       name: Move account into workload OU,       system: aws_orgs, action: move_to_ou,     seconds: 3}
+      - {id: apply_scps,     name: Attach guardrail SCPs,               system: aws_orgs, action: attach_scps,    seconds: 3, undo: detach_scps}
+
+  - id: identity
+    name: Directory groups
+    team: Identity & Access Management
+    depends_on: []
+    steps:
+      - {id: ad_groups,  name: Create AD security groups,          system: active_directory, action: run_playbook, params: {playbook: ad_groups.yml}, seconds: 6, undo: run_playbook_undo}
+      - {id: okta_group, name: Create Okta group and push to AWS,  system: okta,             action: create_group, seconds: 4, undo: delete_group}
+
+  - id: access
+    name: Access & permission sets
+    team: Identity & Access Management
+    depends_on: [account, identity]
+    steps:
+      - {id: permission_sets, name: Provision permission sets,       system: aws_identity_center, action: create_permission_sets, seconds: 4}
+      - {id: assign_groups,   name: Assign groups to the account,    system: aws_identity_center, action: assign_groups,          seconds: 3, undo: unassign_groups}
+
+  - id: network
+    name: Network & IP space
+    team: Network Engineering
+    depends_on: [account]
+    steps:
+      - {id: allocate_cidr, name: Reserve a CIDR block in IPAM,   system: ipam,        action: run_playbook, params: {playbook: ipam_allocate.yml}, seconds: 5, undo: run_playbook_undo}
+      - {id: create_vpc,    name: Create VPC and subnets,         system: aws_network, action: create_vpc,   seconds: 6, undo: delete_vpc}
+      - {id: tgw_attach,    name: Attach VPC to Transit Gateway,  system: aws_network, action: attach_tgw,   seconds: 5, undo: detach_tgw, when: onprem_connectivity}
+
+  - id: firewall
+    name: Firewall rules
+    team: Network Security
+    depends_on: [network]
+    when: onprem_connectivity
+    reason: Needs connectivity back to the data center
+    steps:
+      # An agent step runs FirewallRuleAgentWorkflow: Claude drafts the rules
+      # with tools (CMDB, Panorama, policy check), then Network Security
+      # approves, rejects or asks for changes before anything is applied.
+      - {id: draft_rules, name: Draft rules with Claude and get them reviewed, system: claude_agent, action: agent, kind: agent, agent: firewall_rules, reviewer: Network Security on-call, seconds: 0}
+      - {id: fw_rules,  name: Stage approved rules on Panorama,  system: firewall, action: run_playbook, params: {playbook: firewall_rules.yml},   seconds: 6, undo: run_playbook_undo}
+      - {id: fw_commit, name: Commit and push from Panorama,     system: firewall, action: run_playbook, params: {playbook: panorama_commit.yml}, seconds: 5}
+
+  - id: dns
+    name: DNS
+    team: Network Services
+    depends_on: [network]
+    steps:
+      - {id: private_zone, name: Create Route 53 private hosted zone,     system: aws_network, action: create_private_zone, seconds: 3, undo: delete_private_zone}
+      - {id: forwarders,   name: Add on-prem conditional forwarders,      system: dns,         action: run_playbook, params: {playbook: dns_forwarders.yml}, seconds: 4, undo: run_playbook_undo, when: onprem_connectivity}
+
+  - id: security
+    name: Security baseline
+    team: Cyber Security Operations
+    depends_on: [account]
+    steps:
+      - {id: guardduty,    name: Enable GuardDuty and Security Hub,       system: aws_security, action: enable_detectors,        seconds: 4}
+      - {id: config_rules, name: Deploy AWS Config conformance pack,      system: aws_security, action: deploy_conformance_pack, seconds: 5}
+
+  - id: logging
+    name: Logging & SIEM
+    team: Security Engineering
+    depends_on: [security]
+    steps:
+      - {id: log_delivery, name: Route CloudTrail to the log archive,  system: aws_security, action: configure_log_delivery, seconds: 3}
+      - {id: splunk_input, name: Onboard account to Splunk,            system: splunk,       action: create_hec_input,       seconds: 4, undo: delete_hec_input}
+
+  - id: finops
+    name: Budgets & tagging
+    team: Cloud FinOps
+    depends_on: [account]
+    steps:
+      - {id: budget, name: Create budget and alerts,         system: aws_billing, action: create_budget, seconds: 3, undo: delete_budget}
+      - {id: tags,   name: Apply cost-allocation tags,       system: aws_orgs,    action: tag_account,   seconds: 2}
+
+  - id: cmdb
+    name: CMDB registration
+    team: IT Service Management
+    depends_on: [account, network]
+    steps:
+      - {id: register_ci, name: Register the account in the CMDB,  system: servicenow, action: create_ci, seconds: 3, undo: retire_ci}
+      - {id: link_change, name: Link CI to the change request,     system: servicenow, action: link_ci,   seconds: 2}
+
+# Failure presets shown under "Inject a failure".
+#   kind: hard      -> non-retryable. The track stops, Claude diagnoses it and an
+#                      operator chooses retry, skip or roll back.
+#   kind: transient -> retryable. Temporal retries with backoff on its own; the
+#                      fault clears after `times` failed attempts.
+#   target: <track>.<step>  or  system:<system id>
+faults:
+  - id: ipam_exhausted
+    label: IPAM pool exhausted
+    description: Infoblox has no free /22 left in the workload pool.
+    kind: hard
+    target: network.allocate_cidr
+    error_type: IpamPoolExhausted
+    message: "No free /22 available in network container 10.48.0.0/14 (utilization 100%, 0 of 256 blocks free)"
+    times: 1
+  - id: panorama_lock
+    label: Panorama commit lock
+    description: Another admin is holding the Panorama commit lock.
+    kind: hard
+    target: firewall.fw_commit
+    error_type: PanoramaCommitLocked
+    message: "Commit failed: config lock held by admin 'jsmith' on device-group DG-AWS-Workloads (acquired 14 min ago)"
+    times: 1
+  - id: aws_account_quota
+    label: AWS account quota reached
+    description: The organization hit its account limit.
+    kind: hard
+    target: account.create_account
+    error_type: ConstraintViolationException
+    message: "CreateAccount failed: ACCOUNT_NUMBER_LIMIT_EXCEEDED - the organization has reached the maximum number of member accounts"
+    times: 1
+  - id: okta_rate_limit
+    label: Okta rate limiting
+    description: Okta answers 429 for the next three calls.
+    kind: transient
+    target: system:okta
+    error_type: RateLimited
+    message: "HTTP 429 Too Many Requests from /api/v1/groups (X-Rate-Limit-Remaining: 0)"
+    times: 3
+  - id: servicenow_outage
+    label: ServiceNow API outage
+    description: ServiceNow returns 503 for the next four calls.
+    kind: transient
+    target: system:servicenow
+    error_type: ServiceUnavailable
+    message: "HTTP 503 Service Unavailable from example.service-now.com/api/now/table"
+    times: 4

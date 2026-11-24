@@ -1,0 +1,45 @@
+# Stages the rules Network Security approved (drafted by the Claude agent) on
+# Panorama. `approved_rules` comes from the workflow. Nothing is live until
+# panorama_commit.yml runs.
+- name: Stage Palo Alto rules for the new VPC
+  hosts: panorama
+  gather_facts: false
+  vars:
+    state: present
+    device_group: DG-AWS-Workloads
+    provider:
+      ip_address: "{{ lookup('env', 'PANORAMA_HOST') }}"
+      api_key: "{{ lookup('env', 'PANORAMA_API_KEY') }}"
+  tasks:
+    - name: Create address object for the VPC CIDR
+      paloaltonetworks.panos.panos_address_object:
+        provider: "{{ provider }}"
+        device_group: "{{ device_group }}"
+        name: "aws-{{ account_name }}"
+        value: "{{ vpc_cidr }}"
+        description: "{{ request_id }}"
+        state: "{{ state }}"
+
+    - name: Create one security rule per approved rule
+      paloaltonetworks.panos.panos_security_rule:
+        provider: "{{ provider }}"
+        device_group: "{{ device_group }}"
+        rule_name: "{{ item.name }}"
+        source_zone: [aws-transit]
+        destination_zone: [datacenter]
+        source_ip: ["aws-{{ account_name }}"]
+        destination_ip: ["{{ item.destination }}"]
+        service: ["{{ item.protocol }}-{{ item.port }}"]
+        application: [any]
+        action: allow
+        description: "{{ item.purpose | default('') }} ({{ request_id }})"
+        state: "{{ state }}"
+      loop: "{{ approved_rules | default([]) }}"
+
+    - name: Return output to Temporal
+      ansible.builtin.debug:
+        var: temporal_output
+      vars:
+        temporal_output:
+          device_group: "{{ device_group }}"
+          staged_rules: "{{ approved_rules | default([]) | map(attribute='name') | list }}"

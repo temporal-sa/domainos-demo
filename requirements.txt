@@ -1,0 +1,25 @@
+# Core
+temporalio>=1.12          # activity/child summaries in the Temporal UI need a recent SDK
+anthropic                 # Claude; any recent version (structured outputs go through extra_body)
+fastapi>=0.110
+uvicorn>=0.29
+pydantic>=2.5
+PyYAML>=6.0
+python-dotenv>=1.0
+httpx>=0.27               # real ServiceNow / Okta / Splunk connectors
+
+# Real AWS connector (only needed when an aws_* system is set to mode: real)
+boto3>=1.34
+
+# Real Ansible connector (only on on-prem workers, when AD/IPAM/firewall/DNS go real)
+# ansible-runner>=2.3
+# ansible-core>=2.16
+
+# Agent lab, optional. Workers skip a mode whose packages are missing.
+# langchain-anthropic        # LangChain mode
+# temporalio-langgraph       # LangGraph mode: Temporal's LangGraph plugin (Public Preview), Python 3.11+
+# langgraph
+
+# Tests
+pytest>=8
+pytest-asyncio>=0.23

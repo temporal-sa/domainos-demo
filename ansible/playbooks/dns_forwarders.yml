@@ -1,0 +1,23 @@
+# Adds a conditional forwarder on the on-prem Windows DNS servers so the
+# data center can resolve the account's Route 53 private zone.
+- name: Configure conditional forwarder for the private zone
+  hosts: dns_servers
+  gather_facts: false
+  vars:
+    state: present
+    resolver_ips: [10.48.0.2]   # Route 53 inbound resolver endpoint
+  tasks:
+    - name: Ensure conditional forwarder exists
+      community.windows.win_dns_zone:
+        name: "{{ private_zone | default(account_name ~ '.aws.internal') }}"
+        type: forwarder
+        dns_servers: "{{ resolver_ips }}"
+        replication: forest
+        state: "{{ state }}"
+
+    - name: Return output to Temporal
+      ansible.builtin.debug:
+        var: temporal_output
+      vars:
+        temporal_output:
+          dns_forwarder: "{{ private_zone | default(account_name ~ '.aws.internal') }} -> {{ resolver_ips | join(',') }}"

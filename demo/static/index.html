@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Domainos</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23182230'/%3E%3Cpath d='M16 16V2a14 14 0 0 1 12.1 7z' fill='%23EFA23A'/%3E%3C/svg%3E">
+</head>
+<body class="view-platform controls-open">
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+        <circle cx="16" cy="16" r="14" fill="none" stroke="currentColor" stroke-width="2.5"/>
+        <path id="brand-slice" d="M16 16V2a14 14 0 0 1 12.12 7z" fill="var(--oven)"/>
+        <path d="M16 16 28.12 23M16 16 3.88 23M16 16V30" stroke="currentColor" stroke-width="1.5" opacity=".35"/>
+      </svg>
+      <div>
+        <span class="brand-name" id="brand-name">Domainos</span>
+        <span class="brand-product" id="brand-product">Cloud account tracker</span>
+      </div>
+    </div>
+    <div class="view-switch" role="tablist" aria-label="Choose a view">
+      <button role="tab" data-action="view" data-view="requester" aria-selected="false">Requester</button>
+      <button role="tab" data-action="view" data-view="platform" aria-selected="true">Platform team</button>
+    </div>
+    <div class="topbar-right" id="topbar-status"></div>
+  </header>
+
+  <div class="layout">
+    <aside class="rail">
+      <button class="btn btn-primary btn-block" data-action="open-intake">New request</button>
+      <div class="rail-title">Requests</div>
+      <div id="request-list" class="request-list"></div>
+    </aside>
+
+    <main class="main" id="main" tabindex="-1">
+      <nav class="main-tabs platform-only" id="main-tabs" role="tablist" aria-label="Choose what to show"></nav>
+      <div id="main-body"></div>
+    </main>
+
+    <aside class="controls" id="controls" aria-label="Demo controls"></aside>
+  </div>
+
+  <dialog id="intake" class="intake">
+    <form method="dialog" id="intake-form">
+      <div class="intake-head">
+        <h2>Request a new AWS account</h2>
+        <p>Describe it the way you would in an email. Claude turns it into a spec, works out which teams and approvals it needs, and opens one change request.</p>
+      </div>
+      <div class="intake-presets" id="intake-presets"></div>
+      <label class="field">
+        <span>What do you need?</span>
+        <textarea id="intake-text" rows="6" required></textarea>
+      </label>
+      <label class="field field-inline">
+        <span>Requested by</span>
+        <input id="intake-requester" type="text" value="Jordan Lee">
+      </label>
+      <div class="intake-actions">
+        <button type="button" class="btn" data-action="close-intake">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="intake-submit">Place request</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,30 @@
+# Commits staged changes on Panorama and pushes them to the device group.
+- name: Commit and push Panorama changes
+  hosts: panorama
+  gather_facts: false
+  vars:
+    device_group: DG-AWS-Workloads
+    provider:
+      ip_address: "{{ lookup('env', 'PANORAMA_HOST') }}"
+      api_key: "{{ lookup('env', 'PANORAMA_API_KEY') }}"
+  tasks:
+    - name: Commit candidate config on Panorama
+      paloaltonetworks.panos.panos_commit_panorama:
+        provider: "{{ provider }}"
+        description: "Domainos {{ request_id }}"
+      register: commit
+
+    - name: Push to device group
+      paloaltonetworks.panos.panos_commit_push:
+        provider: "{{ provider }}"
+        style: device group
+        name: "{{ device_group }}"
+        description: "Domainos {{ request_id }}"
+      register: push
+
+    - name: Return output to Temporal
+      ansible.builtin.debug:
+        var: temporal_output
+      vars:
+        temporal_output:
+          panorama_job_id: "{{ push.jobid | default('') }}"

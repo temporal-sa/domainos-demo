@@ -1,0 +1,68 @@
+# ---------------------------------------------------------------------------
+# Connector modes and credentials
+#
+# Every system defaults to mock. Flip one system at a time to `real` to wire
+# it up for real. Values written as env:NAME are read from the environment
+# (or .env), so secrets never live in this file.
+# ---------------------------------------------------------------------------
+
+defaults:
+  mode: mock
+
+systems:
+  # Examples - uncomment to go real one system at a time:
+  # aws_orgs:            {mode: real}
+  # aws_identity_center: {mode: real}
+  # aws_network:         {mode: real}
+  # aws_security:        {mode: real}
+  # aws_billing:         {mode: real}
+  # active_directory:    {mode: real}   # needs ansible-runner + microsoft.ad on the on-prem workers
+  # servicenow:          {mode: real}
+  aws_orgs: {mode: mock}
+
+# --- AWS (used by every aws_* system) --------------------------------------
+aws:
+  dry_run: true                       # log the boto3 calls, don't make them
+  profile: null                       # or a named profile with Organizations access
+  region: us-east-1
+  member_role_name: OrganizationAccountAccessRole
+  account_email_template: "aws+{name}@example.com"
+  ou_ids:                             # target OU per environment
+    sandbox: ou-xxxx-sandbox
+    dev: ou-xxxx-dev
+    test: ou-xxxx-test
+    prod: ou-xxxx-prod
+  scp_ids: []                         # e.g. [p-abc123, p-def456]
+  transit_gateway_id: null            # shared to the org through RAM
+  private_zone_suffix: aws.internal
+  conformance_pack_name: Operational-Best-Practices-for-FFIEC
+  conformance_pack_template_s3: null
+  budget_alert_email: cloud-finops@example.com
+  allow_destructive_compensation: false   # never close accounts on rollback unless true
+  permission_sets:
+    - {name: ReadOnlyAccess,  policies: [arn:aws:iam::aws:policy/ReadOnlyAccess]}
+    - {name: PowerUserAccess, policies: [arn:aws:iam::aws:policy/PowerUserAccess]}
+
+# --- Ansible (AD, Infoblox, Panorama, Windows DNS) -------------------------
+ansible:
+  playbook_dir: ansible/playbooks
+  inventory: ansible/inventory.ini
+
+# --- SaaS ------------------------------------------------------------------
+servicenow:
+  instance_url: env:SN_INSTANCE_URL   # https://<instance>.service-now.com
+  user: env:SN_USER
+  password: env:SN_PASSWORD
+  ci_table: cmdb_ci_cloud_service_account
+  standard_change_template: ""        # sys_id of the standard change version, optional
+
+okta:
+  org_url: env:OKTA_ORG_URL           # https://<org>.okta.com
+  api_token: env:OKTA_API_TOKEN
+  aws_app_id: env:OKTA_AWS_APP_ID     # the AWS IAM Identity Center app
+
+splunk:
+  management_url: env:SPLUNK_MGMT_URL # https://splunk.example:8089
+  user: env:SPLUNK_USER
+  password: env:SPLUNK_PASSWORD
+  verify_tls: true
